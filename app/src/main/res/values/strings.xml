@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JoyGPS</string>
+    <string name="tagline">Move your GPS with a joystick · up to 10 km/h</string>
+    <string name="label_real">REAL GPS LOCATION</string>
+    <string name="label_start">START POINT</string>
+    <string name="locating">Waiting for location permission…</string>
+    <string name="use_as_start">Use as start point</string>
+    <string name="hint_lat">Latitude</string>
+    <string name="hint_lon">Longitude</string>
+    <string name="start">Start mocking</string>
+    <string name="jump">Jump to these coordinates</string>
+    <string name="overlay">Floating joystick</string>
+    <string name="open_maps">Open in Maps</string>
+    <string name="help">One-time setup:\n1. Settings → About phone → tap “Build number” 7 times to enable Developer options.\n2. Developer options → “Select mock location app” → JoyGPS.\n3. For the floating joystick, allow “Display over other apps”.\n\nPush the stick a little to stroll, all the way to the edge for 10 km/h. Up is north. Let go to stop.</string>
+</resources>
