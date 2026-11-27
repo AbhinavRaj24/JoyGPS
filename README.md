@@ -24,7 +24,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
 **No Android Studio?** Push this folder to a GitHub repo. The included workflow
-(`.github/workflows/build.yml`) builds the APK. Download it from the run's *Artifacts* section.
+(`.github/workflows/build.yml`) builds the APK and publishes it as the **latest** release: `https://github.com/<you>/JoyGPS/releases/latest/download/JoyGPS.apk`.
 
 ## One-time phone setup
 
