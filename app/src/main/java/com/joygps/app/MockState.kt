@@ -1,5 +1,7 @@
 package com.joygps.app
 
+import kotlin.math.hypot
+
 /**
  * Shared, in-process state between the UI (activity + floating joystick) and the
  * mock-location service. All listener calls happen on the main thread.
@@ -23,7 +25,7 @@ object MockState {
     @Volatile var speedKmh = 0.0
     @Volatile var bearingDeg = 0.0
 
-    /** Joystick vector: x = east, y = north, length 0..1 (stretch of the stick). */
+    /** Joystick vector: x = east, y = north, length 0..1 (stick deflection). */
     @Volatile var inputX = 0f
         private set
     @Volatile var inputY = 0f
@@ -35,8 +37,16 @@ object MockState {
     private val listeners = mutableListOf<() -> Unit>()
 
     fun setInput(x: Float, y: Float) {
-        inputX = x
-        inputY = y
+        // Reject non-finite input and keep diagonal input within the unit circle.
+        if (!x.isFinite() || !y.isFinite()) {
+            inputX = 0f
+            inputY = 0f
+            return
+        }
+        val magnitude = hypot(x, y)
+        val scale = if (magnitude > 1f) 1f / magnitude else 1f
+        inputX = x * scale
+        inputY = y * scale
     }
 
     fun addListener(l: () -> Unit) {
