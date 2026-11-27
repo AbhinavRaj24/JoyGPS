@@ -27,6 +27,9 @@ import kotlin.math.sin
 /**
  * Foreground service that owns the mock location providers and moves the mocked
  * position according to the joystick input in [MockState].
+ *
+ * Location updates are deliberately emitted on a fixed service tick and use
+ * Android's monotonic elapsed-realtime clock for ordering.
  */
 class MockLocationService : Service() {
 
@@ -85,24 +88,25 @@ class MockLocationService : Service() {
     private fun handleStart(intent: Intent) {
         val lat = intent.getDoubleExtra(EXTRA_LAT, Double.NaN)
         val lon = intent.getDoubleExtra(EXTRA_LON, Double.NaN)
-        altitudeM = intent.getDoubleExtra(EXTRA_ALT, altitudeM)
+        val requestedAltitude = intent.getDoubleExtra(EXTRA_ALT, altitudeM)
 
         // Must be called promptly after startForegroundService().
         if (!goForeground()) {
             stopSelf()
             return
         }
-        if (lat.isNaN() || lon.isNaN()) {
-            if (!MockState.running) fail("No start coordinates were given.")
+        if (!lat.isFinite() || lat !in -90.0..90.0 || !lon.isFinite() || lon !in -180.0..180.0) {
+            if (!MockState.running) fail("Enter valid start coordinates (latitude −90..90, longitude −180..180).")
             return
         }
+        if (requestedAltitude.isFinite()) altitudeM = requestedAltitude
 
         MockState.lat = lat
         MockState.lon = lon
 
         if (MockState.running) {
             // Already mocking: this is a "jump to coordinates".
-            pushLocation(MockState.speedKmh / 3.6)
+            if (!pushLocation(MockState.speedKmh / 3.6)) return
             MockState.notifyListeners()
             updateNotification()
             return
@@ -120,6 +124,7 @@ class MockLocationService : Service() {
         MockState.speedKmh = 0.0
         MockState.setInput(0f, 0f)
         lastTickNanos = SystemClock.elapsedRealtimeNanos()
+        tickCount = 0
         handler.removeCallbacks(tick)
         handler.post(tick)
         MockState.notifyListeners()
@@ -156,7 +161,7 @@ class MockLocationService : Service() {
         return names
     }
 
-    /** Returns false if the app isn't selected as the mock location app. */
+    /** Returns false if no test provider could be registered. */
     @Suppress("DEPRECATION")
     private fun setupProviders(): Boolean {
         activeProviders.clear()
@@ -186,8 +191,8 @@ class MockLocationService : Service() {
                 teardownProviders()
                 return false
             } catch (e: Exception) {
-                // Some devices don't allow overriding every provider; keep going with the rest.
-                Log.w(TAG, "Couldn't mock provider $name", e)
+                // OEMs may restrict individual providers; retain any that succeeded.
+                Log.w(TAG, "Couldn't register mock provider $name", e)
             }
         }
         return activeProviders.isNotEmpty()
@@ -213,13 +218,14 @@ class MockLocationService : Service() {
         if (!MockState.running) return
 
         val now = SystemClock.elapsedRealtimeNanos()
-        val dt = ((now - lastTickNanos) / 1e9).coerceIn(0.0, 1.0)
+        // Bound a delayed tick so a long scheduling pause does not create a large
+        // unexpected position jump when the service resumes.
+        val dt = ((now - lastTickNanos) / 1e9).coerceIn(0.0, MAX_STEP_SECONDS)
         lastTickNanos = now
 
         val x = MockState.inputX.toDouble()
         val y = MockState.inputY.toDouble()
-        val stretch = hypot(x, y).coerceAtMost(1.0)
-        // Speed is proportional to how far the stick is pushed: 0 at centre, 10 km/h at the rim.
+        val stretch = hypot(x, y).coerceIn(0.0, 1.0)
         val speedMs = stretch * MockState.MAX_SPEED_MS
 
         if (stretch > 0.0) {
@@ -228,14 +234,12 @@ class MockLocationService : Service() {
 
             val distance = speedMs * dt
             val latRad = Math.toRadians(MockState.lat)
+            val cosLat = cos(latRad).coerceAtLeast(MIN_LONGITUDE_SCALE)
             val dLat = distance * cos(bearing) / EARTH_RADIUS_M
-            val dLon = distance * sin(bearing) / (EARTH_RADIUS_M * cos(latRad).coerceAtLeast(1e-6))
+            val dLon = distance * sin(bearing) / (EARTH_RADIUS_M * cosLat)
 
             MockState.lat = (MockState.lat + Math.toDegrees(dLat)).coerceIn(-89.9999, 89.9999)
-            var newLon = MockState.lon + Math.toDegrees(dLon)
-            if (newLon > 180.0) newLon -= 360.0
-            if (newLon < -180.0) newLon += 360.0
-            MockState.lon = newLon
+            MockState.lon = normalizeLongitude(MockState.lon + Math.toDegrees(dLon))
         }
         MockState.speedKmh = speedMs * 3.6
 
@@ -246,7 +250,10 @@ class MockLocationService : Service() {
         if (++tickCount % TICKS_PER_NOTIFICATION == 0) updateNotification()
     }
 
-    /** Sends the current position to every mocked provider. Returns false if mocking was revoked. */
+    private fun normalizeLongitude(longitude: Double): Double =
+        ((longitude + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+
+    /** Sends the same timestamped position to every registered mock provider. */
     private fun pushLocation(speedMs: Double): Boolean {
         val nowMs = System.currentTimeMillis()
         val nowNanos = SystemClock.elapsedRealtimeNanos()
@@ -255,14 +262,16 @@ class MockLocationService : Service() {
                 latitude = MockState.lat
                 longitude = MockState.lon
                 altitude = altitudeM
-                accuracy = 3f
+                accuracy = LOCATION_ACCURACY_METERS
                 speed = speedMs.toFloat()
                 bearing = MockState.bearingDeg.toFloat()
                 time = nowMs
                 elapsedRealtimeNanos = nowNanos
-                verticalAccuracyMeters = 4f
-                speedAccuracyMetersPerSecond = 0.3f
-                bearingAccuracyDegrees = 5f
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    verticalAccuracyMeters = VERTICAL_ACCURACY_METERS
+                    speedAccuracyMetersPerSecond = SPEED_ACCURACY_METERS_PER_SECOND
+                    bearingAccuracyDegrees = BEARING_ACCURACY_DEGREES
+                }
             }
             try {
                 lm.setTestProviderLocation(name, loc)
@@ -367,5 +376,11 @@ class MockLocationService : Service() {
         private const val TICK_MS = 200L // 5 location updates per second
         private const val TICKS_PER_NOTIFICATION = 5
         private const val EARTH_RADIUS_M = 6_371_000.0
+        private const val MAX_STEP_SECONDS = 1.0
+        private const val MIN_LONGITUDE_SCALE = 1e-6
+        private const val LOCATION_ACCURACY_METERS = 3f
+        private const val VERTICAL_ACCURACY_METERS = 4f
+        private const val SPEED_ACCURACY_METERS_PER_SECOND = 0.3f
+        private const val BEARING_ACCURACY_DEGREES = 5f
     }
 }
